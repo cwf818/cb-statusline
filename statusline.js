@@ -182,18 +182,9 @@ function runStatusline() {
       hitInfo = ` ${c}ch ${ch.toFixed(1)}%${NC}`;
     }
 
-    // 会话 token 量: 累计输入↓ / 输出↑(含生成速度 tps = 累计输出 / API 时长)
-    let tokInfo = "";
-    if (tIn > 0 || tOut > 0) {
-      let tps = "";
-      if (durMs > 0 && tOut > 0) {
-        const v = tOut / (durMs / 1000);
-        // <10 最多一位小数, >=10 取整
-        const s = v >= 10 ? String(Math.round(v)) : String(Math.round(v * 10) / 10);
-        tps = `(${s}tps)`;
-      }
-      tokInfo = ` ${MAGENTA}\u2191${fmtTok(tIn)} \u2193${fmtTok(tOut)}${tps}${NC}`;
-    }
+    // 会话 token 量: 累计输入↑ / 输出↓
+    // (tps 已移除: 可得的 API 时长均含 prompt 处理/排队, 算不出纯生成速度)
+    const tokInfo = tIn > 0 || tOut > 0 ? ` ${MAGENTA}\u2191${fmtTok(tIn)} \u2193${fmtTok(tOut)}${NC}` : "";
 
     // 账号积分段: 读缓存; 缓存过期则内联刷新 (2.5s 超时兜底)
     //   刷新成功 -> 正常色 (到期紧迫度: <=7天 红 / <=30天 黄 / 其余 绿)
