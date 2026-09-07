@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // CodeBuddy Code statusline:
-//   模型 + 目录 + Git + 成本 + 会话时长 + 上下文窗口(大小/占比) + 会话 token 量 + 账号积分
+//   模型 + 目录 + Git + 成本 + 上下文窗口(大小/占比) + 会话 token 量 + 账号积分
 //   + 缓存命中率 ch (逐调用汇总自 transcript, 见 transcriptCacheStats)
 // 由 statusline.cmd 经 node 调用; CodeBuddy 通过 stdin 传入会话 JSON。
 // 积分段: 读本地缓存(5min TTL), 过期时同进程内联刷新(2.5s 超时兜底)。
@@ -158,7 +158,6 @@ function runStatusline() {
     const model = (d.model && (d.model.display_name || d.model.id)) || "codebuddy";
     const dir = (d.workspace && (d.workspace.current_dir || d.workspace.project_dir)) || "";
     const cost = (d.cost && d.cost.total_cost_usd) || 0;
-    const durMs = (d.cost && d.cost.total_api_duration_ms) || 0;
     const cw = d.context_window || {};
 
     // ANSI 颜色
@@ -192,10 +191,6 @@ function runStatusline() {
     // 会话成本(>0 时显示)
     let costInfo = "";
     if (cost > 0) costInfo = ` ${MAGENTA}$${Number(cost).toFixed(4)}${NC}`;
-
-    // 会话时长(>0 时显示)
-    let durInfo = "";
-    if (durMs > 0) durInfo = ` ${CYAN}${Math.floor(durMs / 1000)}s${NC}`;
 
     // 上下文窗口: 大小 + 占用百分比 (有窗口大小时才显示)
     let ctxInfo = "";
@@ -249,6 +244,6 @@ function runStatusline() {
       }
     }
 
-    process.stdout.write(`${BLUE}[${model}]${NC} ${GREEN}${dirName}${NC}${gitInfo}${costInfo}${durInfo}${ctxInfo}${hitInfo}${tokInfo}${credInfo}\n`);
+    process.stdout.write(`${BLUE}[${model}]${NC} ${GREEN}${dirName}${NC}${gitInfo}${costInfo}${ctxInfo}${hitInfo}${tokInfo}${credInfo}\n`);
   });
 }
