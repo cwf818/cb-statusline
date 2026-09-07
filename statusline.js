@@ -151,7 +151,7 @@ function runStatusline() {
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (input += chunk));
   process.stdin.on("end", async () => {
-    try { fs.writeFileSync(path.join(os.homedir(), ".codebuddy", "statusline-stdin.json"), input); } catch {} // 调试: 原始 stdin 落盘
+    // try { fs.writeFileSync(path.join(os.homedir(), ".codebuddy", "statusline-stdin.json"), input); } catch {} // 调试: 原始 stdin 落盘
     let d = {};
     try { d = JSON.parse(input); } catch {}
 
