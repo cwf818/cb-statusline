@@ -1,96 +1,226 @@
 #!/usr/bin/env node
 // CodeBuddy Code statusline:
-//   模型 + 目录 + Git + 成本 + 会话时长 + 上下文窗口(大小/占比) + 会话 token 量
+//   模型 + 目录 + Git + 成本 + 会话时长 + 上下文窗口(大小/占比) + 会话 token 量 + 账号积分
 // 由 statusline.cmd 经 node 调用; CodeBuddy 通过 stdin 传入会话 JSON。
+// 积分段: 读本地缓存(5min TTL), 过期时同进程内联刷新(2.5s 超时兜底)。
 "use strict";
 
-let input = "";
-process.stdin.setEncoding("utf8");
-process.stdin.on("data", (chunk) => (input += chunk));
-process.stdin.on("end", () => {
-  let d = {};
-  try { d = JSON.parse(input); } catch {}
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const https = require("https");
 
-  const model = (d.model && (d.model.display_name || d.model.id)) || "codebuddy";
-  const dir = (d.workspace && (d.workspace.current_dir || d.workspace.project_dir)) || "";
-  const cost = (d.cost && d.cost.total_cost_usd) || 0;
-  const durMs = (d.cost && d.cost.total_api_duration_ms) || 0;
-  const cw = d.context_window || {};
+// ---------------------------------------------------------------------------
+// 账号积分: 从 WorkBuddy 登录态文件取 token, 调 billing 接口查剩余积分与到期
+// ---------------------------------------------------------------------------
+const CREDITS_CACHE = path.join(os.homedir(), ".codebuddy", "statusline-credits.json");
+const CREDITS_TTL = 5 * 60 * 1000;
+const AUTH_FILE = path.join(os.homedir(), "AppData", "Local", "CodeBuddyExtension", "Data", "Public", "auth", "workbuddy-desktop.info");
+// 商品码与 workbuddy-switch 同源: 前 5 个为免费包, 后 6 个为付费包
+const FREE_PACKAGE_CODES = ["TCACA_code_008_cfWoLwvjU4", "TCACA_code_007_nzdH5h4Nl0", "TCACA_code_028_NtpWi0jzXs", "TCACA_code_029_6wCGEWquYy", "TCACA_code_030_BjSt89qTvr"];
+const PAID_PACKAGE_CODES = ["TCACA_code_002_AkiJS3ZHF5", "TCACA_code_023_4xbGhMrE6q", "TCACA_code_026_BaESVICNoi", "TCACA_code_027_0FCGVA6vSa", "TCACA_code_009_0XmEQc2xOf", "TCACA_code_038_OhvqZtiPKr"];
 
-  // ANSI 颜色
-  const BLUE = "\x1b[0;34m", GREEN = "\x1b[0;32m", YELLOW = "\x1b[1;33m";
-  const CYAN = "\x1b[0;36m", MAGENTA = "\x1b[0;35m", BOLD = "\x1b[1m", NC = "\x1b[0m";
+function httpPost(url, headers, body) {
+  return new Promise((resolve) => {
+    try {
+      const req = https.request(url, { method: "POST", headers: { ...headers, "Content-Length": Buffer.byteLength(body) } }, (res) => {
+        let d = "";
+        res.on("data", (c) => (d += c));
+        res.on("end", () => resolve(d));
+      });
+      req.on("error", () => resolve(""));
+      req.setTimeout(8000, () => { req.destroy(); resolve(""); });
+      req.end(body);
+    } catch { resolve(""); }
+  });
+}
 
-  // token 数格式化: 1234 -> 1.2K  2345678 -> 2.3M
-  const fmtTok = (n) => {
-    if (n == null || isNaN(n)) return "";
-    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
-    if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K";
-    return String(Math.round(n));
+// 剩余积分: 多字段候选 (字符串数值), 与 workbuddy-switch credits.rs 同口径
+function pkgRemain(p) {
+  const v = p.CycleCapacityRemainPrecise ?? p.CycleCapacityRemain ?? p.CapacityRemainPrecise ?? p.CapacityRemain;
+  const n = parseFloat(v);
+  return isNaN(n) ? 0 : n;
+}
+// 到期时间: 毫秒/秒时间戳或日期字符串, 统一转毫秒
+function pkgExpire(p) {
+  const v = p.DeductionEndTime ?? p.deductionEndTime ?? p.ExpiredTime ?? p.expiredTime ?? p.CycleEndTime;
+  if (v == null) return null;
+  if (typeof v === "number" || /^\d+$/.test(String(v).trim())) {
+    let n = +v;
+    if (n < 1e12) n *= 1000; // 秒→毫秒
+    return isNaN(n) ? null : n;
+  }
+  const t = Date.parse(String(v).replace(" ", "T"));
+  return isNaN(t) ? null : t;
+}
+
+async function fetchCredits() {
+  if (!fs.existsSync(AUTH_FILE)) return;
+  let j;
+  try { j = JSON.parse(fs.readFileSync(AUTH_FILE, "utf8")); } catch { return; }
+  const a = j.auth || j;
+  const token = a.accessToken || a.access_token;
+  if (!token) return;
+  const uid = (j.account && j.account.uid) || j.uid || "";
+  const domain = a.domain || j.domain || "";
+  // token 签发域决定 base (X-Domain 不一致会被网关拒)
+  const base = domain.includes("workbuddy.cn") ? "https://www.workbuddy.cn" : "https://www.codebuddy.cn";
+  const headers = {
+    "Authorization": `Bearer ${token}`,
+    "X-User-Id": uid,
+    "X-Domain": domain,
+    "X-Client-Platform": "web",
+    "Content-Type": "application/json",
+    "Accept": "application/json",
   };
+  const now = new Date();
+  const s = new Date(now); s.setHours(0, 0, 0, 0);
+  const e = new Date(now); e.setHours(23, 59, 59, 999);
+  const f = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")} ${String(x.getHours()).padStart(2, "0")}:${String(x.getMinutes()).padStart(2, "0")}:${String(x.getSeconds()).padStart(2, "0")}`;
+  const [freeR, paidR] = await Promise.all([
+    httpPost(base + "/billing/meter/get-user-resource-free-packages", headers, JSON.stringify({ PageNumber: 1, PageSize: 200, Status: [0, 3], SlicePeriodStartTime: f(s), SlicePeriodEndTime: f(e), PackageCodes: FREE_PACKAGE_CODES })),
+    httpPost(base + "/billing/meter/get-user-resource-paid-packages", headers, JSON.stringify({ PageNumber: 1, PageSize: 200, Status: [0, 3], PackageCodes: PAID_PACKAGE_CODES, NeedRenewInfo: true })),
+  ]);
+  const pick = (txt) => {
+    try {
+      const o = JSON.parse(txt);
+      if (!(o.code === 0 || o.code === 200)) return [];
+      const d = o.data || {};
+      return d.Accounts || d.accounts || [];
+    } catch { return []; }
+  };
+  const recs = [...pick(freeR), ...pick(paidR)];
+  if (!recs.length) return;
+  let remain = 0, expireAt = null;
+  for (const p of recs) {
+    const r = pkgRemain(p);
+    if (r <= 0) continue;
+    remain += r;
+    const ex = pkgExpire(p);
+    if (ex && ex > Date.now() && (expireAt == null || ex < expireAt)) expireAt = ex;
+  }
+  try { fs.writeFileSync(CREDITS_CACHE, JSON.stringify({ ts: Date.now(), remain: +remain.toFixed(1), expireAt })); } catch {}
+}
 
-  // 目录名(取最后一段)
-  const dirName = dir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || dir;
+// 入口: 内联刷新模式 (不再派生子进程 — CodeBuddy 会在 statusline 进程退出时
+// 清理其子进程, detached 子进程活不到写完缓存)
+runStatusline();
 
-  // Git 分支与脏状态
-  let gitInfo = "";
-  const { execSync } = require("child_process");
-  try {
-    execSync("git rev-parse --git-dir", { stdio: "ignore" });
-    const branch = execSync("git branch --show-current", { encoding: "utf8" }).trim();
-    if (branch) {
-      let b = branch;
-      try { execSync("git diff-index --quiet HEAD --", { stdio: "ignore" }); } catch { b += "*"; }
-      gitInfo = ` ${GREEN}\u2387${NC} ${YELLOW}${b}${NC}`;
+function runStatusline() {
+  let input = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => (input += chunk));
+  process.stdin.on("end", async () => {
+    let d = {};
+    try { d = JSON.parse(input); } catch {}
+
+    const model = (d.model && (d.model.display_name || d.model.id)) || "codebuddy";
+    const dir = (d.workspace && (d.workspace.current_dir || d.workspace.project_dir)) || "";
+    const cost = (d.cost && d.cost.total_cost_usd) || 0;
+    const durMs = (d.cost && d.cost.total_api_duration_ms) || 0;
+    const cw = d.context_window || {};
+
+    // ANSI 颜色
+    const BLUE = "\x1b[0;34m", GREEN = "\x1b[0;32m", YELLOW = "\x1b[1;33m";
+    const CYAN = "\x1b[0;36m", MAGENTA = "\x1b[0;35m", BOLD = "\x1b[1m", NC = "\x1b[0m";
+
+    // token 数格式化: 1234 -> 1.2K  2345678 -> 2.3M
+    const fmtTok = (n) => {
+      if (n == null || isNaN(n)) return "";
+      if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+      if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K";
+      return String(Math.round(n));
+    };
+
+    // 目录名(取最后一段)
+    const dirName = dir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || dir;
+
+    // Git 分支与脏状态
+    let gitInfo = "";
+    const { execSync } = require("child_process");
+    try {
+      execSync("git rev-parse --git-dir", { stdio: "ignore" });
+      const branch = execSync("git branch --show-current", { encoding: "utf8" }).trim();
+      if (branch) {
+        let b = branch;
+        try { execSync("git diff-index --quiet HEAD --", { stdio: "ignore" }); } catch { b += "*"; }
+        gitInfo = ` ${GREEN}\u2387${NC} ${YELLOW}${b}${NC}`;
+      }
+    } catch {}
+
+    // 会话成本(>0 时显示)
+    let costInfo = "";
+    if (cost > 0) costInfo = ` ${MAGENTA}$${Number(cost).toFixed(4)}${NC}`;
+
+    // 会话时长(>0 时显示)
+    let durInfo = "";
+    if (durMs > 0) durInfo = ` ${CYAN}${Math.floor(durMs / 1000)}s${NC}`;
+
+    // 上下文窗口: 大小 + 占用百分比 (有窗口大小时才显示)
+    let ctxInfo = "";
+    const win = cw.context_window_size;
+    if (win > 0) {
+      let pct = "";
+      if (cw.used_percentage != null) pct = ` ${Math.round(cw.used_percentage)}%`;
+      ctxInfo = ` ${CYAN}ctx ${fmtTok(win)}${pct}${NC}`;
     }
-  } catch {}
 
-  // 会话成本(>0 时显示)
-  let costInfo = "";
-  if (cost > 0) costInfo = ` ${MAGENTA}$${Number(cost).toFixed(4)}${NC}`;
+    // 会话累计 token (total_input 含缓存读+写)
+    const tIn = cw.total_input_tokens || 0;
+    const tOut = cw.total_output_tokens || 0;
 
-  // 会话时长(>0 时显示)
-  let durInfo = "";
-  if (durMs > 0) durInfo = ` ${CYAN}${Math.floor(durMs / 1000)}s${NC}`;
-
-  // 上下文窗口: 大小 + 占用百分比 (有窗口大小时才显示)
-  let ctxInfo = "";
-  const win = cw.context_window_size;
-  if (win > 0) {
-    let pct = "";
-    if (cw.used_percentage != null) pct = ` ${Math.round(cw.used_percentage)}%`;
-    ctxInfo = ` ${CYAN}ctx ${fmtTok(win)}${pct}${NC}`;
-  }
-
-  // 会话累计 token (total_input 含缓存读+写)
-  const tIn = cw.total_input_tokens || 0;
-  const tOut = cw.total_output_tokens || 0;
-
-  // 会话缓存命中率 ch = cr/(净in+cr), 口径与 cmc-proxy vislog 一致
-  // total_input_tokens 含缓存: 净in = total - cacheRead - cacheWrite
-  let hitInfo = "";
-  const cr = (cw.current_usage && cw.current_usage.cache_read_input_tokens) || 0;
-  const cwr = (cw.current_usage && cw.current_usage.cache_creation_input_tokens) || 0;
-  if (cr > 0) {
-    const netIn = Math.max(0, tIn - cr - cwr);
-    const ch = (cr / (cr + netIn)) * 100;
-    // 命中率波段色 (与 vislog hitRateColor 同档): >=95 亮绿 / >=90 绿 / >=80 黄 / >=60 橙 / 红
-    const c = ch >= 95 ? "\x1b[92m" : ch >= 90 ? GREEN : ch >= 80 ? YELLOW : ch >= 60 ? "\x1b[38;5;208m" : "\x1b[0;31m";
-    hitInfo = ` ${c}ch ${ch.toFixed(1)}%${NC}`;
-  }
-
-  // 会话 token 量: 累计输入↓ / 输出↑(含生成速度 tps = 累计输出 / API 时长)
-  let tokInfo = "";
-  if (tIn > 0 || tOut > 0) {
-    let tps = "";
-    if (durMs > 0 && tOut > 0) {
-      const v = tOut / (durMs / 1000);
-      // <10 最多一位小数, >=10 取整
-      const s = v >= 10 ? String(Math.round(v)) : String(Math.round(v * 10) / 10);
-      tps = `(${s}tps)`;
+    // 会话缓存命中率 ch = cr/(净in+cr), 口径与 cmc-proxy vislog 一致
+    // total_input_tokens 含缓存: 净in = total - cacheRead - cacheWrite
+    let hitInfo = "";
+    const cr = (cw.current_usage && cw.current_usage.cache_read_input_tokens) || 0;
+    const cwr = (cw.current_usage && cw.current_usage.cache_creation_input_tokens) || 0;
+    if (cr > 0) {
+      const netIn = Math.max(0, tIn - cr - cwr);
+      const ch = (cr / (cr + netIn)) * 100;
+      // 命中率波段色 (与 vislog hitRateColor 同档): >=95 亮绿 / >=90 绿 / >=80 黄 / >=60 橙 / 红
+      const c = ch >= 95 ? "\x1b[92m" : ch >= 90 ? GREEN : ch >= 80 ? YELLOW : ch >= 60 ? "\x1b[38;5;208m" : "\x1b[0;31m";
+      hitInfo = ` ${c}ch ${ch.toFixed(1)}%${NC}`;
     }
-    tokInfo = ` ${MAGENTA}\u2193${fmtTok(tIn)} \u2191${fmtTok(tOut)}${tps}${NC}`;
-  }
 
-  process.stdout.write(`${BLUE}[${model}]${NC} ${GREEN}${dirName}${NC}${gitInfo}${costInfo}${durInfo}${ctxInfo}${hitInfo}${tokInfo}\n`);
-});
+    // 会话 token 量: 累计输入↓ / 输出↑(含生成速度 tps = 累计输出 / API 时长)
+    let tokInfo = "";
+    if (tIn > 0 || tOut > 0) {
+      let tps = "";
+      if (durMs > 0 && tOut > 0) {
+        const v = tOut / (durMs / 1000);
+        // <10 最多一位小数, >=10 取整
+        const s = v >= 10 ? String(Math.round(v)) : String(Math.round(v * 10) / 10);
+        tps = `(${s}tps)`;
+      }
+      tokInfo = ` ${MAGENTA}\u2191${fmtTok(tIn)} \u2193${fmtTok(tOut)}${tps}${NC}`;
+    }
+
+    // 账号积分段: 读缓存; 缓存过期则内联刷新 (2.5s 超时兜底)
+    //   刷新成功 -> 正常色 (到期紧迫度: <=7天 红 / <=30天 黄 / 其余 绿)
+    //   超时     -> 用已缓存数据, 暗灰色 + 数据过期时长 (·stale Nm)
+    //   无缓存   -> 不显示
+    const GRAY = "\x1b[90m";
+    const readCache = () => { try { return JSON.parse(fs.readFileSync(CREDITS_CACHE, "utf8")); } catch { return null; } };
+    const fresh = (c) => c && c.ts && Date.now() - c.ts < CREDITS_TTL && c.remain != null;
+    let cache = readCache();
+    if (!fresh(cache)) {
+      await Promise.race([fetchCredits(), new Promise((r) => setTimeout(r, 2500))]);
+      cache = readCache();
+    }
+    let credInfo = "";
+    if (cache && cache.remain != null) {
+      if (fresh(cache)) {
+        const days = cache.expireAt ? Math.ceil((cache.expireAt - Date.now()) / 86400000) : null;
+        const col = days != null && days <= 7 ? "\x1b[0;31m" : days != null && days <= 30 ? YELLOW : GREEN;
+        credInfo = ` ${col}credit ${Math.round(cache.remain)}${days != null ? `·${days}d` : ""}${NC}`;
+      } else {
+        // stale: 数据过期时长 (缓存抓取时间距今)
+        const age = Date.now() - cache.ts;
+        const ageStr = age >= 3600000 ? `${Math.floor(age / 3600000)}h` : age >= 60000 ? `${Math.floor(age / 60000)}m` : `${Math.floor(age / 1000)}s`;
+        credInfo = ` ${GRAY}credit ${Math.round(cache.remain)}·${ageStr}${NC}`;
+      }
+    }
+
+    process.stdout.write(`${BLUE}[${model}]${NC} ${GREEN}${dirName}${NC}${gitInfo}${costInfo}${durInfo}${ctxInfo}${hitInfo}${tokInfo}${credInfo}\n`);
+  });
+}
