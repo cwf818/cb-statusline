@@ -34,9 +34,23 @@ CodeBuddy Code 自定义状态栏(statusline)脚本。
 
 ## 部署
 
-1. 将 `statusline.js` 复制到 `~/.codebuddy/`（`statusline.cmd` / `statusline.sh` 所在处），然后让 CodeBuddy 把它配置为statusline。
+1. 将 `statusline.js` 复制到 `~/.codebuddy/`（`statusline.cmd` / `statusline.sh` 所在处），然后让 CodeBuddy 把它配置为statusline（推荐）。或者，在 CodeBuddy 的 `~/.codebuddy/config.json` 中添加：
+
+```json
+"statusLine": {
+  "_comment": "调用 statusline.js 脚本，也可以封装到statusline.cmd / statusline.sh 中调用",
+  "command": "node /path/to/statusline.js",
+  "type": "command",
+  "padding": 0,
+},
+```
+
 2. CodeBuddy 状态栏的 Status hook 会自动调用；无需重启。
 
 ## 积分缓存
 
 积分查询走网络接口，带 5 分钟本地缓存（`~/.codebuddy/statusline-credits.json`）；缓存过期时在同进程内联刷新，2.5s 超时兜底，超时则显示暗灰 stale 数据。
+
+## 安全
+
+积分查询使用了 WorkBuddy 的 AuthToken 文件，不需要提供额外的 Cookie 或 Token，但要求安装 WorkBuddy。没有需求可以不用该功能。
