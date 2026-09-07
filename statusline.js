@@ -174,17 +174,19 @@ function runStatusline() {
 
     // 目录名(取最后一段)
     const dirName = dir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || dir;
+    // 项目名用 YELLOW = 现在 ch 的颜色 (实测命中率黄档)
 
-    // Git 分支与脏状态
+    // Git 分支与脏状态: 整段(⎇ + 分支名 + *)统一着色 — 绿=clean / 橙=dirty
+    const ORANGE = "\x1b[38;5;208m";
     let gitInfo = "";
     const { execSync } = require("child_process");
     try {
       execSync("git rev-parse --git-dir", { stdio: "ignore" });
       const branch = execSync("git branch --show-current", { encoding: "utf8" }).trim();
       if (branch) {
-        let b = branch;
-        try { execSync("git diff-index --quiet HEAD --", { stdio: "ignore" }); } catch { b += "*"; }
-        gitInfo = ` ${GREEN}\u2387${NC} ${YELLOW}${b}${NC}`;
+        let dirty = false;
+        try { execSync("git diff-index --quiet HEAD --", { stdio: "ignore" }); } catch { dirty = true; }
+        gitInfo = ` ${dirty ? ORANGE : GREEN}\u2387 ${branch}${dirty ? "*" : ""}${NC}`;
       }
     } catch {}
 
@@ -244,6 +246,6 @@ function runStatusline() {
       }
     }
 
-    process.stdout.write(`${BLUE}[${model}]${NC} ${GREEN}${dirName}${NC}${gitInfo}${costInfo}${ctxInfo}${hitInfo}${tokInfo}${credInfo}\n`);
+    process.stdout.write(`${BLUE}[${model}]${NC} ${YELLOW}${dirName}${NC}${gitInfo}${costInfo}${ctxInfo}${hitInfo}${tokInfo}${credInfo}\n`);
   });
 }
