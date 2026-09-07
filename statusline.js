@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // CodeBuddy Code statusline:
 //   模型 + 目录 + Git + 成本 + 会话时长 + 上下文窗口(大小/占比) + 会话 token 量 + 账号积分
+//   + 缓存命中率 ch (逐调用汇总自 transcript, 见 transcriptCacheStats)
 // 由 statusline.cmd 经 node 调用; CodeBuddy 通过 stdin 传入会话 JSON。
 // 积分段: 读本地缓存(5min TTL), 过期时同进程内联刷新(2.5s 超时兜底)。
 "use strict";
@@ -102,6 +103,45 @@ async function fetchCredits() {
   try { fs.writeFileSync(CREDITS_CACHE, JSON.stringify({ ts: Date.now(), remain: +remain.toFixed(1), expireAt })); } catch {}
 }
 
+// ---------------------------------------------------------------------------
+// 缓存命中率: 从 transcript 逐调用汇总 (数据源实测结论 2026-09-07):
+//   - context_window.current_usage 是"最近一次调用"用量而非会话累计, 差分法不可行
+//   - cost.total_api_duration_ms 在 /clear 后冻结不变, 不能算 tps
+//   - transcript 每调用 rawUsage 自洽: prompt_cache_hit + prompt_cache_miss = prompt_tokens
+//   ch = Σhit / Σprompt (transcript 即账本, 天然含 7 天内的全部调用, 无需自建存储)
+// ---------------------------------------------------------------------------
+function transcriptCacheStats(p) {
+  try {
+    const raw = fs.readFileSync(p, "utf8");
+    // CodeBuddy transcript 为拼接 JSON 对象流(非 JSONL/数组), 字符串感知括号配平逐个提取
+    let sumHit = 0, sumPrompt = 0;
+    let depth = 0, start = -1, inStr = false, esc = false;
+    const handle = (s) => {
+      try {
+        const e = JSON.parse(s);
+        const ru = e.providerData && e.providerData.rawUsage;
+        if (ru && ru.prompt_tokens != null) {
+          sumPrompt += ru.prompt_tokens || 0;
+          sumHit += ru.prompt_cache_hit_tokens || 0;
+        }
+      } catch {}
+    };
+    for (let i = 0; i < raw.length; i++) {
+      const c = raw[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === "\\") esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') { inStr = true; continue; }
+      if (c === "{") { if (depth === 0) start = i; depth++; }
+      else if (c === "}") { depth--; if (depth === 0 && start >= 0) { handle(raw.slice(start, i + 1)); start = -1; } }
+    }
+    return { hit: sumHit, prompt: sumPrompt };
+  } catch { return null; }
+}
+
 // 入口: 内联刷新模式 (不再派生子进程 — CodeBuddy 会在 statusline 进程退出时
 // 清理其子进程, detached 子进程活不到写完缓存)
 runStatusline();
@@ -111,6 +151,7 @@ function runStatusline() {
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (input += chunk));
   process.stdin.on("end", async () => {
+    try { fs.writeFileSync(path.join(os.homedir(), ".codebuddy", "statusline-stdin.json"), input); } catch {} // 调试: 原始 stdin 落盘
     let d = {};
     try { d = JSON.parse(input); } catch {}
 
@@ -169,21 +210,17 @@ function runStatusline() {
     const tIn = cw.total_input_tokens || 0;
     const tOut = cw.total_output_tokens || 0;
 
-    // 会话缓存命中率 ch = cr/(净in+cr), 口径与 cmc-proxy vislog 一致
-    // total_input_tokens 含缓存: 净in = total - cacheRead - cacheWrite
+    // 缓存命中率 ch = Σ命中/Σ输入, 逐调用汇总自 transcript (精确口径)
+    // 波段色 (与 vislog hitRateColor 同档): >=95 亮绿 / >=90 绿 / >=80 黄 / >=60 橙 / 红
+    const chColor = (v) => v >= 95 ? "\x1b[92m" : v >= 90 ? GREEN : v >= 80 ? YELLOW : v >= 60 ? "\x1b[38;5;208m" : "\x1b[0;31m";
     let hitInfo = "";
-    const cr = (cw.current_usage && cw.current_usage.cache_read_input_tokens) || 0;
-    const cwr = (cw.current_usage && cw.current_usage.cache_creation_input_tokens) || 0;
-    if (cr > 0) {
-      const netIn = Math.max(0, tIn - cr - cwr);
-      const ch = (cr / (cr + netIn)) * 100;
-      // 命中率波段色 (与 vislog hitRateColor 同档): >=95 亮绿 / >=90 绿 / >=80 黄 / >=60 橙 / 红
-      const c = ch >= 95 ? "\x1b[92m" : ch >= 90 ? GREEN : ch >= 80 ? YELLOW : ch >= 60 ? "\x1b[38;5;208m" : "\x1b[0;31m";
-      hitInfo = ` ${c}ch ${ch.toFixed(1)}%${NC}`;
+    const cs = d.transcript_path ? transcriptCacheStats(d.transcript_path) : null;
+    if (cs && cs.prompt > 0) {
+      const ch = (cs.hit / cs.prompt) * 100;
+      hitInfo = ` ${chColor(ch)}ch ${ch.toFixed(1)}%${NC}`;
     }
 
     // 会话 token 量: 累计输入↑ / 输出↓
-    // (tps 已移除: 可得的 API 时长均含 prompt 处理/排队, 算不出纯生成速度)
     const tokInfo = tIn > 0 || tOut > 0 ? ` ${MAGENTA}\u2191${fmtTok(tIn)} \u2193${fmtTok(tOut)}${NC}` : "";
 
     // 账号积分段: 读缓存; 缓存过期则内联刷新 (2.5s 超时兜底)
