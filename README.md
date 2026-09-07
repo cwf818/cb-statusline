@@ -1,6 +1,8 @@
 # cb-statusline
 
 ![License: MIT](https://img.shields.io/github/license/cwf818/cb-statusline)
+![Stars](https://img.shields.io/github/stars/cwf818/cb-statusline)
+![Version](https://img.shields.io/github/v/tag/cwf818/cb-statusline)
 ![Top language](https://img.shields.io/github/languages/top/cwf818/cb-statusline)
 ![Last commit](https://img.shields.io/github/last-commit/cwf818/cb-statusline)
 
@@ -9,6 +11,7 @@ CodeBuddy Code 自定义状态栏(statusline)脚本。
 ## 需求
 
 最近领了 WorkBuddy 不少积分，其中刚好有常用的 DS Flash（速度很快） 和 GLM Flash（积分消耗少），也可以用一些免费的如 Hy3，CodeBuddy 在使用习惯上和 Claude Code 非常接近，所以就转过来用了。
+
 但是习惯上如果看不到【Git状态、上下文状态、缓存命中率、Token速度和额度信息】，会不够自在，所以写了这个状态栏脚本，供 CodeBuddy 使用。不过【Token速度】一直没有好的解决方案，暂时只能先观察动态信息进行预估了。
 
 ## 显示内容
