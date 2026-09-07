@@ -1,6 +1,15 @@
 # cb-statusline
 
+![License: MIT](https://img.shields.io/github/license/cwf818/cb-statusline)
+![Top language](https://img.shields.io/github/languages/top/cwf818/cb-statusline)
+![Last commit](https://img.shields.io/github/last-commit/cwf818/cb-statusline)
+
 CodeBuddy Code 自定义状态栏(statusline)脚本。
+
+## 需求
+
+最近领了 WorkBuddy 不少积分，其中刚好有常用的 DS Flash（速度很快） 和 GLM Flash（积分消耗少），也可以用一些免费的如 Hy3，CodeBuddy 在使用习惯上和 Claude Code 非常接近，所以就转过来用了。
+但是习惯上如果看不到【Git状态、上下文状态、缓存命中率、Token速度和额度信息】，会不够自在，所以写了这个状态栏脚本，供 CodeBuddy 使用。不过【Token速度】一直没有好的解决方案，暂时只能先观察动态信息进行预估了。
 
 ## 显示内容
 
@@ -10,19 +19,19 @@ CodeBuddy Code 自定义状态栏(statusline)脚本。
 [模型] 项目名 ⎇分支 ctx ch ↑输入↓输出 credit
 ```
 
-| 段 | 含义 | 颜色 |
-|---|---|---|
-| `[模型]` | 当前模型 | 蓝 |
-| `项目名` | 当前工作目录最后一段 | 黄 |
-| `⎇ 分支` | Git 分支；dirty 时追加 `*` | 绿=clean / 橙=dirty |
-| `ctx` | 上下文窗口大小 + 占用百分比 | 青 |
-| `ch` | 缓存命中率 Σhit/Σprompt (逐调用汇总自 transcript) | ≥95 亮绿 / ≥90 绿 / ≥80 黄 / ≥60 橙 / 红 |
-| `↑输入 ↓输出` | 会话累计 token | 紫 |
-| `credit` | 账号剩余积分 (+ 到期天数) | 绿/黄/红(按到期紧迫度) |
+| 段            | 含义                                              | 颜色                                     |
+| ------------- | ------------------------------------------------- | ---------------------------------------- |
+| `[模型]`      | 当前模型                                          | 蓝                                       |
+| `项目名`      | 当前工作目录最后一段                              | 黄                                       |
+| `⎇ 分支`      | Git 分支；dirty 时追加 `*`                        | 绿=clean / 橙=dirty                      |
+| `ctx`         | 上下文窗口大小 + 占用百分比                       | 青                                       |
+| `ch`          | 缓存命中率 Σhit/Σprompt (逐调用汇总自 transcript) | ≥95 亮绿 / ≥90 绿 / ≥80 黄 / ≥60 橙 / 红 |
+| `↑输入 ↓输出` | 会话累计 token                                    | 紫                                       |
+| `credit`      | 账号剩余积分 (+ 到期天数)                         | 绿/黄/红(按到期紧迫度)                   |
 
 ## 部署
 
-1. 将 `statusline.js` 复制到 `~/.codebuddy/`（`statusline.cmd` / `statusline.sh` 所在处）。
+1. 将 `statusline.js` 复制到 `~/.codebuddy/`（`statusline.cmd` / `statusline.sh` 所在处），然后让 CodeBuddy 把它配置为statusline。
 2. CodeBuddy 状态栏的 Status hook 会自动调用；无需重启。
 
 ## 积分缓存
