@@ -20,6 +20,8 @@ const AUTH_FILE = path.join(os.homedir(), "AppData", "Local", "CodeBuddyExtensio
 // 商品码与 workbuddy-switch 同源: 前 5 个为免费包, 后 6 个为付费包
 const FREE_PACKAGE_CODES = ["TCACA_code_008_cfWoLwvjU4", "TCACA_code_007_nzdH5h4Nl0", "TCACA_code_028_NtpWi0jzXs", "TCACA_code_029_6wCGEWquYy", "TCACA_code_030_BjSt89qTvr"];
 const PAID_PACKAGE_CODES = ["TCACA_code_002_AkiJS3ZHF5", "TCACA_code_023_4xbGhMrE6q", "TCACA_code_026_BaESVICNoi", "TCACA_code_027_0FCGVA6vSa", "TCACA_code_009_0XmEQc2xOf", "TCACA_code_038_OhvqZtiPKr"];
+// 实验: 生成速度估算的会话级状态 (由 CB_STATUSLINE_EXPERIMENT_ON 启用)
+const SPEED_STATE_FILE = path.join(os.homedir(), ".codebuddy", "statusline-speed.json");
 
 function httpPost(url, headers, body) {
   return new Promise((resolve) => {
@@ -142,16 +144,80 @@ function transcriptCacheStats(p) {
   } catch { return null; }
 }
 
+// ---------------------------------------------------------------------------
+// 实验: 生成速度估算 (env CB_STATUSLINE_EXPERIMENT_ON=1 启用)
+//   按 session_id 持久化记账, 单条记录字段:
+//     total_output_tokens / total_api_duration_ms  = 上次有效观测的累计值 (基线)
+//     session_total_api_duration_ms                 = 合格 Δapi 的累计 (初值 0)
+//     init_total_output_tokens                      = 建账时的 total_output_tokens, 之后不变
+//     ts                                             = 最近一次更新时间戳
+//   TTL 24h: 记录缺失或超时都视为不存在。
+//   每观测一次:
+//     不存在   -> 仅建账: 基线=当前值, session_total_api_duration_ms=0,
+//                init_total_output_tokens=当前 total_output_tokens
+//     已存在   -> 仅当 Δout>0 且 Δapi>0 时同时前移两基线并刷新 ts;
+//                若再满足 Δout*1000/Δapi > 1 (token/s, ms 归一为秒) 则
+//                session_total_api_duration_ms += Δapi。
+//   显示 tps = (当前 total_output_tokens - init_total_output_tokens) * 1000
+//                / session_total_api_duration_ms。
+//   返回 null 表示暂无值可显示 (未建账/无累计时长/无新增输出)。
+// ---------------------------------------------------------------------------
+const SPEED_TTL = 24 * 3600 * 1000;
+function calcSpeedTps(d) {
+  const sid = d.session_id;
+  const cw = d.context_window || {};
+  const cost = d.cost || {};
+  const out = cw.total_output_tokens || 0;
+  const api = cost.total_api_duration_ms;
+  if (!sid || typeof api !== "number" || !isFinite(api)) return null;
+  let st = null;
+  try { st = JSON.parse(fs.readFileSync(SPEED_STATE_FILE, "utf8")); } catch {}
+  if (!st || typeof st !== "object") st = {};
+  const now = Date.now();
+  const rec = st[sid];
+  if (!rec || typeof rec.ts !== "number" || now - rec.ts >= SPEED_TTL || typeof rec.init_total_output_tokens !== "number") {
+    // 不存在或 TTL 过期: 仅建账
+    st[sid] = {
+      total_output_tokens: out,
+      total_api_duration_ms: api,
+      session_total_api_duration_ms: 0,
+      init_total_output_tokens: out,
+      ts: now,
+    };
+    try { fs.writeFileSync(SPEED_STATE_FILE, JSON.stringify(st)); } catch {}
+    return null;
+  }
+  const dOut = out - rec.total_output_tokens;
+  const dApi = api - rec.total_api_duration_ms;
+  if (dOut > 0 && dApi > 0) {
+    // 有效观测段: 基线前移 + 刷新 ts; s>1 (token/s) 才累计时长
+    rec.total_output_tokens = out;
+    rec.total_api_duration_ms = api;
+    rec.ts = now;
+    if ((dOut * 1000) / dApi > 1) rec.session_total_api_duration_ms += dApi;
+    try { fs.writeFileSync(SPEED_STATE_FILE, JSON.stringify(st)); } catch {}
+  }
+  const acc = rec.session_total_api_duration_ms || 0;
+  const gained = out - rec.init_total_output_tokens;
+  if (acc > 0 && gained > 0) return (gained * 1000) / acc;
+  return null;
+}
+
 // 入口: 内联刷新模式 (不再派生子进程 — CodeBuddy 会在 statusline 进程退出时
 // 清理其子进程, detached 子进程活不到写完缓存)
 runStatusline();
 
 function runStatusline() {
+  // 实验开关: 设了 CB_STATUSLINE_EXPERIMENT_ON 才启用 stdin 落盘与速度估算
+  const EXPERIMENT_ON = !!process.env.CB_STATUSLINE_EXPERIMENT_ON;
   let input = "";
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => (input += chunk));
   process.stdin.on("end", async () => {
-    // try { fs.writeFileSync(path.join(os.homedir(), ".codebuddy", "statusline-stdin.json"), input); } catch {} // 调试: 原始 stdin 落盘
+    // 调试: 原始 stdin 落盘
+    if (EXPERIMENT_ON) {
+      try { fs.writeFileSync(path.join(os.homedir(), ".codebuddy", "statusline-stdin.json"), input); } catch {}
+    }
     let d = {};
     try { d = JSON.parse(input); } catch {}
 
@@ -215,8 +281,13 @@ function runStatusline() {
       hitInfo = ` ${chColor(ch)}ch ${ch.toFixed(1)}%${NC}`;
     }
 
-    // 会话 token 量: 累计输入↑ / 输出↓
-    const tokInfo = tIn > 0 || tOut > 0 ? ` ${MAGENTA}\u2191${fmtTok(tIn)} \u2193${fmtTok(tOut)}${NC}` : "";
+    // 会话 token 量: 累计输入↑ / 输出↓; 实验开关下在输出后追加估算速度 @Ntps
+    let tpsStr = "";
+    if (EXPERIMENT_ON) {
+      const tps = calcSpeedTps(d);
+      if (tps != null && Math.round(tps) >= 1) tpsStr = `@${Math.round(tps)}tps`;
+    }
+    const tokInfo = tIn > 0 || tOut > 0 ? ` ${MAGENTA}\u2191${fmtTok(tIn)} \u2193${fmtTok(tOut)}${tpsStr}${NC}` : "";
 
     // 账号积分段: 读缓存; 缓存过期则内联刷新 (2.5s 超时兜底)
     //   刷新成功 -> 正常色 (到期紧迫度: <=7天 红 / <=30天 黄 / 其余 绿)
