@@ -201,6 +201,16 @@ function transcriptCacheStats(p) {
 //   返回 null 表示暂无值可显示 (未建账/无累计时长/无新增输出)。
 // ---------------------------------------------------------------------------
 const SPEED_TTL = 24 * 3600 * 1000;
+const SPEED_KEEP_MS = 7 * 24 * 3600 * 1000; // 记账文件清理: 剔除超过 7 天未更新的会话
+// 写前清理超过 SPEED_KEEP_MS 未更新的记录 (超过 SPEED_TTL 的条目读取时本就视为不存在)
+function writeSpeedState(st) {
+  const now = Date.now();
+  for (const k of Object.keys(st)) {
+    const r = st[k];
+    if (!r || typeof r.ts !== "number" || now - r.ts >= SPEED_KEEP_MS) delete st[k];
+  }
+  try { fs.writeFileSync(SPEED_STATE_FILE, JSON.stringify(st)); } catch {}
+}
 function calcSpeedTps(d) {
   const sid = d.session_id;
   const cw = d.context_window || {};
@@ -222,7 +232,7 @@ function calcSpeedTps(d) {
       init_total_output_tokens: out,
       ts: now,
     };
-    try { fs.writeFileSync(SPEED_STATE_FILE, JSON.stringify(st)); } catch {}
+    writeSpeedState(st);
     return null;
   }
   const dOut = out - rec.total_output_tokens;
@@ -233,7 +243,7 @@ function calcSpeedTps(d) {
     rec.total_api_duration_ms = api;
     rec.ts = now;
     if ((dOut * 1000) / dApi > 1) rec.session_total_api_duration_ms += dApi;
-    try { fs.writeFileSync(SPEED_STATE_FILE, JSON.stringify(st)); } catch {}
+    writeSpeedState(st);
   }
   const acc = rec.session_total_api_duration_ms || 0;
   const gained = out - rec.init_total_output_tokens;
