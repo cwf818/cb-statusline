@@ -30,7 +30,7 @@ CodeBuddy Code 自定义状态栏(statusline)脚本。
 | `项目名`      | 当前工作目录最后一段                              | 黄                                       |
 | `⎇ 分支`      | Git 分支；dirty 时追加 `*`                        | 绿=clean / 橙=dirty                      |
 | `↑输入 ↓输出` | 会话累计 token                                    | 紫                                       |
-| `ctx`         | 上下文占用 已用/总量, 按占用波段着色(先到为准)     | 青 / 黄 / 橙 / 亮红                     |
+| `ctx`         | 上下文占用 已用/总量, 按占用波段着色(先到为准)    | 青 / 黄 / 橙 / 亮红                      |
 | `ch`          | 缓存命中率 Σhit/Σprompt (逐调用汇总自 transcript) | ≥95 亮绿 / ≥90 绿 / ≥80 黄 / ≥60 橙 / 红 |
 | `credit`      | 账号剩余积分 (+ 到期天数)                         | 绿/黄/红(按到期紧迫度)                   |
 
@@ -57,4 +57,12 @@ CodeBuddy Code 自定义状态栏(statusline)脚本。
 
 ## 安全
 
-积分查询使用了 WorkBuddy 的 AuthToken 文件，不需要提供额外的 Cookie 或 Token，但要求安装 WorkBuddy。没有需求可以不用该功能。
+积分查询直接使用环境变量中的 CODEBUDDY_AUTH_TOKEN，兜底使用 WorkBuddy 的 AuthToken 文件（需安装 WorkBuddy），不需要提供额外的 Cookie 或 Token。
+
+Token 仅用于查询积分信息，仅发送到 Token 自带的签发域名（兜底为 codebuddy.cn），未发送到任何第三方。
+
+单文件插件，若不放心可以先交给 AI 分析一下安全性。
+
+```
+ @statusline.js 对这个文件做一个简单的安全分析
+```
