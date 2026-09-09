@@ -187,15 +187,17 @@ function transcriptCacheStats(p) {
 //   按 session_id 持久化记账, 单条记录字段:
 //     total_output_tokens / total_api_duration_ms  = 上次有效观测的累计值 (基线)
 //     session_total_api_duration_ms                 = 合格 Δapi 的累计 (初值 0)
+//     session_total_api_calls                       = 累计过 session_total_api_duration_ms 的次数 (初值 0)
 //     init_total_output_tokens                      = 建账时的 total_output_tokens, 之后不变
 //     ts                                             = 最近一次更新时间戳
 //   TTL 24h: 记录缺失或超时都视为不存在。
 //   每观测一次:
 //     不存在   -> 仅建账: 基线=当前值, session_total_api_duration_ms=0,
+//                session_total_api_calls=0,
 //                init_total_output_tokens=当前 total_output_tokens
 //     已存在   -> 仅当 Δout>0 且 Δapi>0 时同时前移两基线并刷新 ts;
 //                若再满足 Δout*1000/Δapi > 1 (token/s, ms 归一为秒) 则
-//                session_total_api_duration_ms += Δapi。
+//                session_total_api_duration_ms += Δapi, session_total_api_calls += 1。
 //   显示 tps = (当前 total_output_tokens - init_total_output_tokens) * 1000
 //                / session_total_api_duration_ms。
 //   返回 null 表示暂无值可显示 (未建账/无累计时长/无新增输出)。
@@ -229,6 +231,7 @@ function calcSpeedTps(d) {
       total_output_tokens: out,
       total_api_duration_ms: api,
       session_total_api_duration_ms: 0,
+      session_total_api_calls: 0,
       init_total_output_tokens: out,
       ts: now,
     };
@@ -242,7 +245,10 @@ function calcSpeedTps(d) {
     rec.total_output_tokens = out;
     rec.total_api_duration_ms = api;
     rec.ts = now;
-    if ((dOut * 1000) / dApi > 1) rec.session_total_api_duration_ms += dApi;
+    if ((dOut * 1000) / dApi > 1) {
+      rec.session_total_api_duration_ms += dApi;
+      rec.session_total_api_calls = (rec.session_total_api_calls || 0) + 1;
+    }
     writeSpeedState(st);
   }
   const acc = rec.session_total_api_duration_ms || 0;
