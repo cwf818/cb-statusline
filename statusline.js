@@ -10,6 +10,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const https = require("https");
+const crypto = require("crypto");
 
 // ---------------------------------------------------------------------------
 // 账号积分: 调 billing 接口查剩余积分与到期
@@ -18,6 +19,7 @@ const https = require("https");
 // ---------------------------------------------------------------------------
 const CREDITS_CACHE = path.join(os.homedir(), ".codebuddy", "statusline-credits.json");
 const CREDITS_TTL = 5 * 60 * 1000;
+const CREDITS_KEEP_MS = 24 * 3600 * 1000; // 写入时清理超过 24h 的桶
 const AUTH_FILE = path.join(os.homedir(), "AppData", "Local", "CodeBuddyExtension", "Data", "Public", "auth", "workbuddy-desktop.info");
 // 商品码与 workbuddy-switch 同源: 前 5 个为免费包, 后 6 个为付费包
 const FREE_PACKAGE_CODES = ["TCACA_code_008_cfWoLwvjU4", "TCACA_code_007_nzdH5h4Nl0", "TCACA_code_028_NtpWi0jzXs", "TCACA_code_029_6wCGEWquYy", "TCACA_code_030_BjSt89qTvr"];
@@ -77,6 +79,10 @@ function jwtPayload(token) {
     return JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
   } catch { return null; }
 }
+// 缓存分桶 key: token 过长不直接落盘, 用 sha256 前 16 位十六进制区分账号
+function tokenKey(token) {
+  return crypto.createHash("sha256").update(token).digest("hex").slice(0, 16);
+}
 
 async function fetchCredits() {
   const token = readToken();
@@ -120,7 +126,21 @@ async function fetchCredits() {
     const ex = pkgExpire(p);
     if (ex && ex > Date.now() && (expireAt == null || ex < expireAt)) expireAt = ex;
   }
-  try { fs.writeFileSync(CREDITS_CACHE, JSON.stringify({ ts: Date.now(), remain: +remain.toFixed(1), expireAt })); } catch {}
+  // 按当前 token hash 分桶写缓存: 保留 24h 内其他账号的桶, 清掉更旧的
+  try {
+    const all = {};
+    const now = Date.now();
+    try {
+      const old = JSON.parse(fs.readFileSync(CREDITS_CACHE, "utf8"));
+      if (old && typeof old === "object") {
+        for (const [k, v] of Object.entries(old)) {
+          if (v && typeof v === "object" && typeof v.ts === "number" && now - v.ts < CREDITS_KEEP_MS) all[k] = v;
+        }
+      }
+    } catch {}
+    all[tokenKey(token)] = { ts: now, remain: +remain.toFixed(1), expireAt };
+    fs.writeFileSync(CREDITS_CACHE, JSON.stringify(all));
+  } catch {}
 }
 
 // ---------------------------------------------------------------------------
@@ -323,12 +343,21 @@ function runStatusline() {
     //   超时     -> 用已缓存数据, 暗灰色 + 数据过期时长 (·stale Nm)
     //   无缓存   -> 不显示
     const GRAY = "\x1b[90m";
-    const readCache = () => { try { return JSON.parse(fs.readFileSync(CREDITS_CACHE, "utf8")); } catch { return null; } };
+    // 缓存按 token hash 分桶, 只读当前 token 对应的条目 (换账号互不串)
+    const tk = readToken();
+    const tkey = tk ? tokenKey(tk) : "";
+    const getEntry = () => {
+      if (!tkey) return null;
+      try {
+        const c = JSON.parse(fs.readFileSync(CREDITS_CACHE, "utf8"));
+        return (c && typeof c === "object" && c[tkey]) || null;
+      } catch { return null; }
+    };
     const fresh = (c) => c && c.ts && Date.now() - c.ts < CREDITS_TTL && c.remain != null;
-    let cache = readCache();
+    let cache = getEntry();
     if (!fresh(cache)) {
       await Promise.race([fetchCredits(), new Promise((r) => setTimeout(r, 2500))]);
-      cache = readCache();
+      cache = getEntry();
     }
     let credInfo = "";
     if (cache && cache.remain != null) {
