@@ -255,16 +255,27 @@ function runStatusline() {
       }
     } catch {}
 
-    // 上下文窗口: 已用/总量 (无占用数据时只显示窗口大小; 有窗口大小时才显示)
+    // 上下文窗口: 已用/总量, 按占用波段着色 (无占用数据时只显示窗口大小)
+    //   波段双条件"先到为准"取高档: 已用占比 ≥50/60/70%  或  已用绝对量 ≥100K/160K/260K
+    //   颜色: 1档黄(同 credit) / 2档橙(同 git dirty) / 3档亮红
+    const CTX_RED = "\x1b[38;5;203m"; // 3档: 亮红但饱和度略低 (可换成 196 纯亮红或 91)
     let ctxInfo = "";
     const win = cw.context_window_size;
     if (win > 0) {
       let ut = fmtTok(win);
+      let col = CYAN;
       if (cw.used_percentage != null) {
         const used = Math.round(win * cw.used_percentage / 100);
         ut = `${fmtTok(used)}/${fmtTok(win)}`;
+        const tier = Math.max(
+          cw.used_percentage >= 70 ? 3 : cw.used_percentage >= 60 ? 2 : cw.used_percentage >= 50 ? 1 : 0,
+          used >= 260000 ? 3 : used >= 160000 ? 2 : used >= 100000 ? 1 : 0,
+        );
+        if (tier === 3) col = CTX_RED;
+        else if (tier === 2) col = ORANGE;
+        else if (tier === 1) col = YELLOW;
       }
-      ctxInfo = ` ${CYAN}ctx ${ut}${NC}`;
+      ctxInfo = ` ${col}ctx ${ut}${NC}`;
     }
 
     // 会话累计 token (total_input 含缓存读+写)
