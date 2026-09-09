@@ -12,7 +12,9 @@ const os = require("os");
 const https = require("https");
 
 // ---------------------------------------------------------------------------
-// 账号积分: 从 WorkBuddy 登录态文件取 token, 调 billing 接口查剩余积分与到期
+// 账号积分: 调 billing 接口查剩余积分与到期
+//   token 优先取当前进程的 CODEBUDDY_AUTH_TOKEN (即 CodeBuddy 实际使用的账号);
+//   未设置时兜底读桌面端登录态文件。base/X-Domain 由 token 的 JWT iss 决定。
 // ---------------------------------------------------------------------------
 const CREDITS_CACHE = path.join(os.homedir(), ".codebuddy", "statusline-credits.json");
 const CREDITS_TTL = 5 * 60 * 1000;
@@ -57,20 +59,36 @@ function pkgExpire(p) {
   return isNaN(t) ? null : t;
 }
 
+// 取 token: 优先当前进程的 CODEBUDDY_AUTH_TOKEN (CodeBuddy 实际账号), 兜底读桌面端登录态
+function readToken() {
+  const env = process.env.CODEBUDDY_AUTH_TOKEN;
+  if (env) return env;
+  if (!fs.existsSync(AUTH_FILE)) return null;
+  try {
+    const j = JSON.parse(fs.readFileSync(AUTH_FILE, "utf8"));
+    return (j.auth || j).accessToken || (j.auth || j).access_token || null;
+  } catch { return null; }
+}
+// 解码 JWT payload (不验签), 取 iss 以决定请求 base / X-Domain
+function jwtPayload(token) {
+  try {
+    const part = token.split(".")[1];
+    if (!part) return null;
+    return JSON.parse(Buffer.from(part, "base64url").toString("utf8"));
+  } catch { return null; }
+}
+
 async function fetchCredits() {
-  if (!fs.existsSync(AUTH_FILE)) return;
-  let j;
-  try { j = JSON.parse(fs.readFileSync(AUTH_FILE, "utf8")); } catch { return; }
-  const a = j.auth || j;
-  const token = a.accessToken || a.access_token;
+  const token = readToken();
   if (!token) return;
-  const uid = (j.account && j.account.uid) || j.uid || "";
-  const domain = a.domain || j.domain || "";
-  // token 签发域决定 base (X-Domain 不一致会被网关拒)
-  const base = domain.includes("workbuddy.cn") ? "https://www.workbuddy.cn" : "https://www.codebuddy.cn";
+  // token 签发域决定 base/X-Domain (不一致会被网关拒); 缺 iss 时兜底 codebuddy.cn
+  let base = "https://www.codebuddy.cn", domain = "";
+  const pl = jwtPayload(token);
+  if (pl && typeof pl.iss === "string") {
+    try { const u = new URL(pl.iss); base = u.origin; domain = u.host; } catch {}
+  }
   const headers = {
     "Authorization": `Bearer ${token}`,
-    "X-User-Id": uid,
     "X-Domain": domain,
     "X-Client-Platform": "web",
     "Content-Type": "application/json",
