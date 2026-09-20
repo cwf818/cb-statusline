@@ -318,10 +318,11 @@ function runStatusline() {
     if (win > 0) {
       let ut = fmtTok(win);
       let col = CYAN;
+      let tier = 0;
       if (cw.used_percentage != null) {
         const used = Math.round(win * cw.used_percentage / 100);
         ut = `${fmtTok(used)}/${fmtTok(win)}`;
-        const tier = Math.max(
+        tier = Math.max(
           cw.used_percentage >= 70 ? 3 : cw.used_percentage >= 60 ? 2 : cw.used_percentage >= 50 ? 1 : 0,
           used >= 260000 ? 3 : used >= 160000 ? 2 : used >= 100000 ? 1 : 0,
         );
@@ -329,7 +330,10 @@ function runStatusline() {
         else if (tier === 2) col = ORANGE;
         else if (tier === 1) col = YELLOW;
       }
-      ctxInfo = ` ${col}ctx ${ut}${NC}`;
+      // 图标即水位表: 填充面积随占用档单调递增 (25/50/75/100%)
+      //   选用均为 N(窄)字宽的圆族符号, 在中文终端下不撑成 2 格
+      const CTX_ICON = ["\u25D4", "\u25D3", "\u25D5", "\u2B24"]; // ◔ ◓ ◕ ⬤
+      ctxInfo = ` ${col}${CTX_ICON[tier]}${ut}${NC}`;
     }
 
     // 会话累计 token (total_input 含缓存读+写)
@@ -343,7 +347,7 @@ function runStatusline() {
     const cs = d.transcript_path ? transcriptCacheStats(d.transcript_path) : null;
     if (cs && cs.prompt > 0) {
       const ch = (cs.hit / cs.prompt) * 100;
-      hitInfo = ` ${chColor(ch)}ch ${ch.toFixed(1)}%${NC}`;
+      hitInfo = ` ${chColor(ch)}◉${ch.toFixed(1)}%${NC}`;
     }
 
     // 会话 token 量: 累计输入↑ / 输出↓; 实验开关下在输出后追加估算速度 @Ntps
@@ -380,12 +384,12 @@ function runStatusline() {
       if (fresh(cache)) {
         const days = cache.expireAt ? Math.ceil((cache.expireAt - Date.now()) / 86400000) : null;
         const col = days != null && days <= 7 ? "\x1b[0;31m" : days != null && days <= 30 ? YELLOW : GREEN;
-        credInfo = ` ${col}credit ${Math.round(cache.remain)}${days != null ? `·${days}d` : ""}${NC}`;
+        credInfo = ` ${col}✦${Math.round(cache.remain)}${days != null ? `·${days}d` : ""}${NC}`;
       } else {
         // stale: 数据过期时长 (缓存抓取时间距今)
         const age = Date.now() - cache.ts;
         const ageStr = age >= 3600000 ? `${Math.floor(age / 3600000)}h` : age >= 60000 ? `${Math.floor(age / 60000)}m` : `${Math.floor(age / 1000)}s`;
-        credInfo = ` ${GRAY}credit ${Math.round(cache.remain)}·${ageStr}${NC}`;
+        credInfo = ` ${GRAY}✦${Math.round(cache.remain)}·${ageStr}${NC}`;
       }
     }
 
