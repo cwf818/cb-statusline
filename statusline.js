@@ -19,6 +19,9 @@ const crypto = require("crypto");
 // ---------------------------------------------------------------------------
 const CREDITS_CACHE = path.join(os.homedir(), ".codebuddy", "statusline-credits.json");
 const CREDITS_TTL = 5 * 60 * 1000;
+// 缓存条目结构版本: 旧版只有 remain/expireAt, 缺 临期额度 expireRemain, 读到即当过期重取
+//   (否则会短暂出现"已临期但显示不出临期额度"的半截状态)
+const CREDITS_SCHEMA = 1;
 const CREDITS_KEEP_MS = 24 * 3600 * 1000; // 写入时清理超过 24h 的桶
 const AUTH_FILE = path.join(os.homedir(), "AppData", "Local", "CodeBuddyExtension", "Data", "Public", "auth", "workbuddy-desktop.info");
 // 商品码与 workbuddy-switch 同源: 前 5 个为免费包, 后 6 个为付费包
@@ -118,13 +121,26 @@ async function fetchCredits() {
   };
   const recs = [...pick(freeR), ...pick(paidR)];
   if (!recs.length) return;
-  let remain = 0, expireAt = null;
+  // 最近到期的额度: 总数之外再显示"最先会过期的部分"
+  //   按天归组 (口径与显示一致: ceil), 同一天到期的包累加 —— 免费包是按天发的,
+  //   同一天往往不止一包; 只取其中一包会少算, 只按毫秒相等累加则会漏掉同天不同时的包
+  let remain = 0, expireAt = null, expireDays = null, expireRemain = null;
+  const nowMs = Date.now();
   for (const p of recs) {
     const r = pkgRemain(p);
     if (r <= 0) continue;
     remain += r;
     const ex = pkgExpire(p);
-    if (ex && ex > Date.now() && (expireAt == null || ex < expireAt)) expireAt = ex;
+    if (!ex || ex <= nowMs) continue;
+    const days = Math.ceil((ex - nowMs) / 86400000);
+    if (expireDays == null || days < expireDays) {
+      expireDays = days;
+      expireAt = ex;
+      expireRemain = r;
+    } else if (days === expireDays) {
+      expireRemain += r;
+      if (ex < expireAt) expireAt = ex;
+    }
   }
   // 按当前 token hash 分桶写缓存: 保留 24h 内其他账号的桶, 清掉更旧的
   try {
@@ -138,7 +154,14 @@ async function fetchCredits() {
         }
       }
     } catch {}
-    all[tokenKey(token)] = { ts: now, remain: +remain.toFixed(1), expireAt };
+    all[tokenKey(token)] = {
+      v: CREDITS_SCHEMA,
+      ts: now,
+      remain: +remain.toFixed(1),
+      expireAt, // 最近到期那一档里最早的时间点 (仅展示/排查用)
+      expireDays,
+      expireRemain: expireRemain == null ? null : +expireRemain.toFixed(1),
+    };
     fs.writeFileSync(CREDITS_CACHE, JSON.stringify(all));
   } catch {}
 }
@@ -359,7 +382,9 @@ function runStatusline() {
     const tokInfo = tIn > 0 || tOut > 0 ? ` ${MAGENTA}\u2191${fmtTok(tIn)} \u2193${fmtTok(tOut)}${tpsStr}${NC}` : "";
 
     // 账号积分段: 读缓存; 缓存过期则内联刷新 (2.5s 超时兜底)
-    //   刷新成功 -> 正常色 (到期紧迫度: <=7天 红 / <=30天 黄 / 其余 绿)
+    //   内容 ✦[总额度·]最近到期额度·最近到期天数, 不用波段色:
+    //   默认只有 ✦总额度(黄); 临期(<=7天)才展开, 临期段红
+    //   总额度与临期额度相同时不显示总额度, ✦ 归临期段
     //   超时     -> 用已缓存数据, 暗灰色 + 数据过期时长 (·stale Nm)
     //   无缓存   -> 不显示
     const GRAY = "\x1b[90m";
@@ -373,7 +398,7 @@ function runStatusline() {
         return (c && typeof c === "object" && c[tkey]) || null;
       } catch { return null; }
     };
-    const fresh = (c) => c && c.ts && Date.now() - c.ts < CREDITS_TTL && c.remain != null;
+    const fresh = (c) => c && c.v === CREDITS_SCHEMA && c.ts && Date.now() - c.ts < CREDITS_TTL && c.remain != null;
     let cache = getEntry();
     if (!fresh(cache)) {
       await Promise.race([fetchCredits(), new Promise((r) => setTimeout(r, 2500))]);
@@ -382,9 +407,25 @@ function runStatusline() {
     let credInfo = "";
     if (cache && cache.remain != null) {
       if (fresh(cache)) {
-        const days = cache.expireAt ? Math.ceil((cache.expireAt - Date.now()) / 86400000) : null;
-        const col = days != null && days <= 7 ? "\x1b[0;31m" : days != null && days <= 30 ? YELLOW : GREEN;
-        credInfo = ` ${col}✦${Math.round(cache.remain)}${days != null ? `·${days}d` : ""}${NC}`;
+        // expireDays/expireRemain 同一次抓取里成对写出, 且旧结构条目已被 schema 判为过期,
+        // 故此刻两者必然同有同无; 下面的兜底只为防缓存被手改坏
+        const days = cache.expireDays ?? (cache.expireAt ? Math.ceil((cache.expireAt - Date.now()) / 86400000) : null);
+        const total = Math.round(cache.remain);
+        const near = cache.expireRemain == null ? null : Math.round(cache.expireRemain);
+        // 不用波段色. ✦ 恒带, 是段标识:
+        //   默认整段黄, 只有 ✦总额度
+        //   最近到期 <=7 天已属临期, 展开 最近到期额度·天数 并染红
+        //   总额度与最近到期额度相同(显示值相等)时不显示总额度, 此时 ✦ 随临期段一起红
+        const RED = "\x1b[0;31m";
+        let seg;
+        if (days != null && days <= 7 && near != null) {
+          seg = near === total
+            ? `${RED}✦${near}·${days}d${NC}`
+            : `${YELLOW}✦${total}${NC}${RED}·${near}·${days}d${NC}`;
+        } else {
+          seg = `${YELLOW}✦${total}${NC}`;
+        }
+        credInfo = ` ${seg}`;
       } else {
         // stale: 数据过期时长 (缓存抓取时间距今)
         const age = Date.now() - cache.ts;
