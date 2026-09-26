@@ -2,6 +2,7 @@
 // CodeBuddy Code statusline:
 //   模型 + 目录 + Git + 会话 token 量 + 上下文窗口(已用/总量) + 账号积分
 //   + 缓存命中率 ch (逐调用汇总自 transcript, 见 transcriptCacheStats)
+//   + 内存使用率 (系统 RAM 占用, 见 memInfo)
 // 由 statusline.cmd 经 node 调用; CodeBuddy 通过 stdin 传入会话 JSON。
 // 积分段: 读本地缓存(5min TTL), 过期时同进程内联刷新(2.5s 超时兜底)。
 "use strict";
@@ -373,6 +374,21 @@ function runStatusline() {
       hitInfo = ` ${chColor(ch)}◉${ch.toFixed(1)}%${NC}`;
     }
 
+    // 内存使用率: 系统 RAM 占用 = (total - free) / total, 格式 🖳 80%
+    //   波段色沿用 creditgauge m_memUsage (percentBands [60,70,80,90] 的 5 档):
+    //   <60 亮绿 / 60-70 暗绿 / 70-80 黄 / 80-90 橙 / >=90 红
+    let memInfo = "";
+    const memTotal = os.totalmem();
+    if (memTotal > 0) {
+      const memPct = ((memTotal - os.freemem()) / memTotal) * 100;
+      const memCol = memPct < 60 ? "\x1b[38;5;41m"
+        : memPct < 70 ? "\x1b[38;5;29m"
+        : memPct < 80 ? "\x1b[38;5;220m"
+        : memPct < 90 ? "\x1b[38;5;208m"
+        : "\x1b[38;5;196m";
+      memInfo = ` ${memCol}\u{1F5B3} ${Math.round(memPct)}%${NC}`;
+    }
+
     // 会话 token 量: 累计输入↑ / 输出↓; 实验开关下在输出后追加估算速度 @Ntps
     let tpsStr = "";
     if (EXPERIMENT_ON) {
@@ -434,6 +450,6 @@ function runStatusline() {
       }
     }
 
-    process.stdout.write(`${BLUE}[${model}]${NC} ${YELLOW}${dirName}${NC}${gitInfo}${tokInfo}${ctxInfo}${hitInfo}${credInfo}\n`);
+    process.stdout.write(`${BLUE}[${model}]${NC} ${YELLOW}${dirName}${NC}${gitInfo}${tokInfo}${ctxInfo}${hitInfo}${memInfo}${credInfo}\n`);
   });
 }
