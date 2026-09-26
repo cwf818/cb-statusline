@@ -16,7 +16,9 @@ const crypto = require("crypto");
 // ---------------------------------------------------------------------------
 // 账号积分: 调 billing 接口查剩余积分与到期
 //   token 优先取当前进程的 CODEBUDDY_AUTH_TOKEN (即 CodeBuddy 实际使用的账号);
-//   未设置时兜底读桌面端登录态文件。base/X-Domain 由 token 的 JWT iss 决定。
+//   未设置时兜底读 ~/.codebuddy/settings.json 的 env.CODEBUDDY_AUTH_TOKEN
+//   (CLI 的 env 配置源, 与真实账号一致; 避免首帧回退到别的产品账号)。
+//   base/X-Domain 由 token 的 JWT iss 决定。
 // ---------------------------------------------------------------------------
 const CREDITS_CACHE = path.join(os.homedir(), ".codebuddy", "statusline-credits.json");
 const CREDITS_TTL = 5 * 60 * 1000;
@@ -24,7 +26,7 @@ const CREDITS_TTL = 5 * 60 * 1000;
 //   (否则会短暂出现"已临期但显示不出临期额度"的半截状态)
 const CREDITS_SCHEMA = 1;
 const CREDITS_KEEP_MS = 24 * 3600 * 1000; // 写入时清理超过 24h 的桶
-const AUTH_FILE = path.join(os.homedir(), "AppData", "Local", "CodeBuddyExtension", "Data", "Public", "auth", "workbuddy-desktop.info");
+const SETTINGS_FILE = path.join(os.homedir(), ".codebuddy", "settings.json");
 // 商品码与 workbuddy-switch 同源: 前 5 个为免费包, 后 6 个为付费包
 const FREE_PACKAGE_CODES = ["TCACA_code_008_cfWoLwvjU4", "TCACA_code_007_nzdH5h4Nl0", "TCACA_code_028_NtpWi0jzXs", "TCACA_code_029_6wCGEWquYy", "TCACA_code_030_BjSt89qTvr"];
 const PAID_PACKAGE_CODES = ["TCACA_code_002_AkiJS3ZHF5", "TCACA_code_023_4xbGhMrE6q", "TCACA_code_026_BaESVICNoi", "TCACA_code_027_0FCGVA6vSa", "TCACA_code_009_0XmEQc2xOf", "TCACA_code_038_OhvqZtiPKr"];
@@ -65,14 +67,14 @@ function pkgExpire(p) {
   return isNaN(t) ? null : t;
 }
 
-// 取 token: 优先当前进程的 CODEBUDDY_AUTH_TOKEN (CodeBuddy 实际账号), 兜底读桌面端登录态
+// 取 token: 优先当前进程的 CODEBUDDY_AUTH_TOKEN (CodeBuddy 实际账号),
+//   兜底读 ~/.codebuddy/settings.json 的 env.CODEBUDDY_AUTH_TOKEN (首帧 CLI 尚未注入 env 时)
 function readToken() {
   const env = process.env.CODEBUDDY_AUTH_TOKEN;
   if (env) return env;
-  if (!fs.existsSync(AUTH_FILE)) return null;
   try {
-    const j = JSON.parse(fs.readFileSync(AUTH_FILE, "utf8"));
-    return (j.auth || j).accessToken || (j.auth || j).access_token || null;
+    const j = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8"));
+    return (j.env && j.env.CODEBUDDY_AUTH_TOKEN) || null;
   } catch { return null; }
 }
 // 解码 JWT payload (不验签), 取 iss 以决定请求 base / X-Domain
