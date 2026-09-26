@@ -51,6 +51,11 @@ CodeBuddy Code 自定义状态栏(statusline)脚本。
 
 各段图标统一选用 East Asian Width 为 `N`（窄）的字符，避免在中文终端下被渲染成 2 格宽而与相邻段错位。
 
+着色按“词”下发：每个空格分隔的词都自带 `复位+色码+复位`。原因是状态行的两处渲染行为——
+
+1. `TextWrapBox` 在状态行超宽时按空格切词换行，且不跨行重放 ANSI 色码。所以单段内含空格的着色（如 `🖳 86%` / `↑2M ↓9.8K` / `⎇ master`）若恰好断在空格处，后一词落到新行就会丢色。
+2. 状态行外层 `Text` 带 `dimColor`（Ink 在每行内容前插 `\x1b[2m`），而多数色码不以 `0` 开头（`\x1b[1;33m` / `\x1b[92m` / `\x1b[38;5;208m`…）清不掉 dim，于是**每行首个词**会被压暗一半（第二词起被前一词的复位救回）。词前补 `\x1b[0m` 即可清掉行首继承的 dim。
+
 ## 部署
 
 1. 将 `statusline.js` 复制到 `~/.codebuddy/`（`statusline.cmd` / `statusline.sh` 所在处），然后让 CodeBuddy 把它配置为statusline（推荐）。或者，在 CodeBuddy 的 `~/.codebuddy/config.json` 中添加：

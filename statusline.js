@@ -307,6 +307,16 @@ function runStatusline() {
     const BLUE = "\x1b[0;34m", GREEN = "\x1b[0;32m", YELLOW = "\x1b[1;33m";
     const CYAN = "\x1b[0;36m", MAGENTA = "\x1b[0;35m", BOLD = "\x1b[1m", NC = "\x1b[0m";
 
+    // 着色: 逐词独立下发 "复位 + 色码 + 词 + 复位"。针对状态行渲染的两点行为:
+    //   1) CodeBuddy 的 TextWrapBox 换行按空格切词、且不跨行重放 ANSI —— 单段内含
+    //      空格的着色 (如 "🖳 86%" / "↑2M ↓9.8K" / "⎇ master") 若断在空格处, 后一词
+    //      会落到新行而丢色。逐词着色后断在哪都保色。
+    //   2) 状态行外层 Text 带 dimColor:true, Ink 会在每行内容前插 \x1b[2m (行尾
+    //      \x1b[22m)。而我们的色码多数不以 0 开头 (\x1b[1;33m / \x1b[92m / \x1b[38;5;208m…)
+    //      不会清掉 dim —— 于是每行*首个词*会被压暗一半 (第二词起被前一词的 \x1b[0m
+    //      复位救回)。每个词前置 \x1b[0m 复位即可清掉行首继承的 dim。
+    const paint = (col, s) => s.split(" ").map((w) => `${NC}${col}${w}${NC}`).join(" ");
+
     // token 数格式化: 1234 -> 1.2K  2345678 -> 2.3M
     const fmtTok = (n) => {
       if (n == null || isNaN(n)) return "";
@@ -329,7 +339,7 @@ function runStatusline() {
       if (branch) {
         let dirty = false;
         try { execSync("git diff-index --quiet HEAD --", { stdio: "ignore" }); } catch { dirty = true; }
-        gitInfo = ` ${dirty ? ORANGE : GREEN}\u2387 ${branch}${dirty ? "*" : ""}${NC}`;
+        gitInfo = ` ${paint(dirty ? ORANGE : GREEN, `\u2387 ${branch}${dirty ? "*" : ""}`)}`;
       }
     } catch {}
 
@@ -357,7 +367,7 @@ function runStatusline() {
       // 图标即水位表: 填充面积随占用档单调递增 (25/50/75/100%)
       //   选用均为 N(窄)字宽的圆族符号, 在中文终端下不撑成 2 格
       const CTX_ICON = ["\u25D4", "\u25D3", "\u25D5", "\u2B24"]; // ◔ ◓ ◕ ⬤
-      ctxInfo = ` ${col}${CTX_ICON[tier]}${ut}${NC}`;
+      ctxInfo = ` ${paint(col, `${CTX_ICON[tier]}${ut}`)}`;
     }
 
     // 会话累计 token (total_input 含缓存读+写)
@@ -371,7 +381,7 @@ function runStatusline() {
     const cs = d.transcript_path ? transcriptCacheStats(d.transcript_path) : null;
     if (cs && cs.prompt > 0) {
       const ch = (cs.hit / cs.prompt) * 100;
-      hitInfo = ` ${chColor(ch)}◉${ch.toFixed(1)}%${NC}`;
+      hitInfo = ` ${paint(chColor(ch), `◉${ch.toFixed(1)}%`)}`;
     }
 
     // 内存使用率: 系统 RAM 占用 = (total - free) / total, 格式 🖳 80%
@@ -386,7 +396,7 @@ function runStatusline() {
         : memPct < 80 ? "\x1b[38;5;220m"
         : memPct < 90 ? "\x1b[38;5;208m"
         : "\x1b[38;5;196m";
-      memInfo = ` ${memCol}\u{1F5B3} ${Math.round(memPct)}%${NC}`;
+      memInfo = ` ${paint(memCol, `\u{1F5B3} ${Math.round(memPct)}%`)}`;
     }
 
     // 会话 token 量: 累计输入↑ / 输出↓; 实验开关下在输出后追加估算速度 @Ntps
@@ -395,7 +405,7 @@ function runStatusline() {
       const tps = calcSpeedTps(d);
       if (tps != null && Math.round(tps) >= 1) tpsStr = `@${Math.round(tps)}tps`;
     }
-    const tokInfo = tIn > 0 || tOut > 0 ? ` ${MAGENTA}\u2191${fmtTok(tIn)} \u2193${fmtTok(tOut)}${tpsStr}${NC}` : "";
+    const tokInfo = tIn > 0 || tOut > 0 ? ` ${paint(MAGENTA, `\u2191${fmtTok(tIn)} \u2193${fmtTok(tOut)}${tpsStr}`)}` : "";
 
     // 账号积分段: 读缓存; 缓存过期则内联刷新 (2.5s 超时兜底)
     //   内容 ✦[总额度·]最近到期额度·最近到期天数, 不用波段色:
@@ -436,20 +446,20 @@ function runStatusline() {
         let seg;
         if (days != null && days <= 7 && near != null) {
           seg = near === total
-            ? `${RED}✦${near}·${days}d${NC}`
-            : `${YELLOW}✦${total}${NC}${RED}·${near}·${days}d${NC}`;
+            ? paint(RED, `✦${near}·${days}d`)
+            : paint(YELLOW, `✦${total}`) + paint(RED, `·${near}·${days}d`);
         } else {
-          seg = `${YELLOW}✦${total}${NC}`;
+          seg = paint(YELLOW, `✦${total}`);
         }
         credInfo = ` ${seg}`;
       } else {
         // stale: 数据过期时长 (缓存抓取时间距今)
         const age = Date.now() - cache.ts;
         const ageStr = age >= 3600000 ? `${Math.floor(age / 3600000)}h` : age >= 60000 ? `${Math.floor(age / 60000)}m` : `${Math.floor(age / 1000)}s`;
-        credInfo = ` ${GRAY}✦${Math.round(cache.remain)}·${ageStr}${NC}`;
+        credInfo = ` ${paint(GRAY, `✦${Math.round(cache.remain)}·${ageStr}`)}`;
       }
     }
 
-    process.stdout.write(`${BLUE}[${model}]${NC} ${YELLOW}${dirName}${NC}${gitInfo}${tokInfo}${ctxInfo}${hitInfo}${memInfo}${credInfo}\n`);
+    process.stdout.write(`${paint(BLUE, `[${model}]`)} ${paint(YELLOW, dirName)}${gitInfo}${tokInfo}${ctxInfo}${hitInfo}${memInfo}${credInfo}\n`);
   });
 }
