@@ -309,7 +309,7 @@ function runStatusline() {
 
     // 着色: 逐词独立下发 "复位 + 色码 + 词 + 复位"。针对状态行渲染的两点行为:
     //   1) CodeBuddy 的 TextWrapBox 换行按空格切词、且不跨行重放 ANSI —— 单段内含
-    //      空格的着色 (如 "🖳 86%" / "↑2M ↓9.8K" / "⎇ master") 若断在空格处, 后一词
+    //      空格的着色 (如 "↑2M ↓9.8K" / "⎇ master") 若断在空格处, 后一词
     //      会落到新行而丢色。逐词着色后断在哪都保色。
     //   2) 状态行外层 Text 带 dimColor:true, Ink 会在每行内容前插 \x1b[2m (行尾
     //      \x1b[22m)。而我们的色码多数不以 0 开头 (\x1b[1;33m / \x1b[92m / \x1b[38;5;208m…)
@@ -384,7 +384,7 @@ function runStatusline() {
       hitInfo = ` ${paint(chColor(ch), `◉${ch.toFixed(1)}%`)}`;
     }
 
-    // 内存使用率: 系统 RAM 占用 = (total - free) / total, 格式 🖳 80%
+    // 内存使用率: 系统 RAM 占用 = (total - free) / total, 格式 ⬓80%
     //   波段色沿用 creditgauge m_memUsage (percentBands [60,70,80,90] 的 5 档):
     //   <60 亮绿 / 60-70 暗绿 / 70-80 黄 / 80-90 橙 / >=90 红
     let memInfo = "";
@@ -396,7 +396,7 @@ function runStatusline() {
         : memPct < 80 ? "\x1b[38;5;220m"
         : memPct < 90 ? "\x1b[38;5;208m"
         : "\x1b[38;5;196m";
-      memInfo = ` ${paint(memCol, `\u{1F5B3} ${Math.round(memPct)}%`)}`;
+      memInfo = ` ${paint(memCol, `\u2B13${Math.round(memPct)}%`)}`;
     }
 
     // 会话 token 量: 累计输入↑ / 输出↓; 实验开关下在输出后追加估算速度 @Ntps
