@@ -304,8 +304,8 @@ function runStatusline() {
     const cw = d.context_window || {};
 
     // ANSI 颜色
-    const BLUE = "\x1b[0;34m", GREEN = "\x1b[0;32m", YELLOW = "\x1b[1;33m";
-    const CYAN = "\x1b[0;36m", MAGENTA = "\x1b[0;35m", BOLD = "\x1b[1m", NC = "\x1b[0m";
+    const BLUE = "\x1b[94m", GREEN = "\x1b[0;32m", YELLOW = "\x1b[1;33m";
+    const CYAN = "\x1b[0;36m", MAGENTA = "\x1b[38;5;213m", BOLD = "\x1b[1m", NC = "\x1b[0m";
 
     // 着色: 逐词独立下发 "复位 + 色码 + 词 + 复位"。针对状态行渲染的两点行为:
     //   1) CodeBuddy 的 TextWrapBox 换行按空格切词、且不跨行重放 ANSI —— 单段内含
