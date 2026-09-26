@@ -408,8 +408,8 @@ function runStatusline() {
     const tokInfo = tIn > 0 || tOut > 0 ? ` ${paint(MAGENTA, `\u2191${fmtTok(tIn)} \u2193${fmtTok(tOut)}${tpsStr}`)}` : "";
 
     // 账号积分段: 读缓存; 缓存过期则内联刷新 (2.5s 超时兜底)
-    //   内容 ✦[总额度·]最近到期额度·最近到期天数, 不用波段色:
-    //   默认只有 ✦总额度(黄); 临期(<=7天)才展开, 临期段红
+    //   内容 ✦总额度·最近到期天数; 临期(<=7天)时展开为 ✦总额度·最近到期额度·天数
+    //   <=7天沿用临期段红色规则; >7天恢复按到期紧迫度着色
     //   总额度与临期额度相同时不显示总额度, ✦ 归临期段
     //   超时     -> 用已缓存数据, 暗灰色 + 数据过期时长 (·stale Nm)
     //   无缓存   -> 不显示
@@ -438,10 +438,10 @@ function runStatusline() {
         const days = cache.expireDays ?? (cache.expireAt ? Math.ceil((cache.expireAt - Date.now()) / 86400000) : null);
         const total = Math.round(cache.remain);
         const near = cache.expireRemain == null ? null : Math.round(cache.expireRemain);
-        // 不用波段色. ✦ 恒带, 是段标识:
-        //   默认整段黄, 只有 ✦总额度
+        // ✦ 恒带, 是段标识:
         //   最近到期 <=7 天已属临期, 展开 最近到期额度·天数 并染红
         //   总额度与最近到期额度相同(显示值相等)时不显示总额度, 此时 ✦ 随临期段一起红
+        //   最近到期 >7 天时恢复显示 总额度·最近到期天数, 并按紧迫度着色
         const RED = "\x1b[0;31m";
         let seg;
         if (days != null && days <= 7 && near != null) {
@@ -449,7 +449,8 @@ function runStatusline() {
             ? paint(RED, `✦${near}·${days}d`)
             : paint(YELLOW, `✦${total}`) + paint(RED, `·${near}·${days}d`);
         } else {
-          seg = paint(YELLOW, `✦${total}`);
+          const col = days != null && days <= 30 ? YELLOW : GREEN;
+          seg = paint(col, `✦${total}${days != null ? `·${days}d` : ""}`);
         }
         credInfo = ` ${seg}`;
       } else {
